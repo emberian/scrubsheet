@@ -856,7 +856,9 @@ window.addEventListener("drop", (event) => {
 
 document.addEventListener("keydown", (event) => {
   if (
-    event.target.closest('input, textarea, select, [contenteditable="true"]') ||
+    event.target.closest(
+      'input:not([type="range"]), textarea, select, [contenteditable="true"]',
+    ) ||
     $("help").open
   )
     return;

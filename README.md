@@ -2,6 +2,8 @@
 
 Scrub a video. Pick your moments. Make a contact sheet. With a judgmental skaterpunk shrub.
 
+[Open Scrubsheet](https://emberian.github.io/scrubsheet/)
+
 A static, browser-only app: native HTML video, Canvas export, vanilla JavaScript and CSS. No runtime dependencies, build step, backend, uploads, or ffmpeg. All app assets live in this repo, including the animated mascot.
 
 ## Run
@@ -14,7 +16,7 @@ python3 -m http.server 8000 --bind 127.0.0.1
 
 Open <http://127.0.0.1:8000>. Python only serves static files; it does not process video. Any static HTTP server works.
 
-For GitHub Pages, choose **Settings → Pages → Deploy from a branch**, then the desired branch and **/(root)**. All asset paths are relative, so a repository subpath works. Nothing has to be built. Publishing is not part of the local setup.
+GitHub Pages publishes the **dev** branch from **/(root)**. Pushes to that branch update the live app. All asset paths are relative, so a repository subpath works. Nothing has to be built locally.
 
 ## Use
 

@@ -1,8 +1,9 @@
 # Browser verification
 
-Verified in Chromium through Playwright on 2026-09-17, using MDN's small CC0 flower video. No test dependencies are required by the app.
+Verified in Chromium through Playwright on 2026-09-17, using MDN's small CC0 flower video and the user's local `genotr2.mp4` (1440 × 1080, about 154 seconds). No test dependencies are required by the app.
 
 - Local file load; player-click and keyboard capture; automatic advancement to the next cell.
+- Focused timeline regression: click the range slider, press C, and verify capture and advancement without moving focus. Arrow scrubbing still works with the slider focused; C in URL/text inputs continues editing text without capturing.
 - Arrow and Shift-arrow scrubbing (0 → 0.1 → 1.1 seconds), timestamp entry, and double-clicking a cell to revisit its time.
 - Destination selection, drag-to-swap, removal, button and keyboard undo.
 - End-of-grid capture guard: capturing the last cell disarms capture until a cell is selected explicitly.
@@ -10,7 +11,7 @@ Verified in Chromium through Playwright on 2026-09-17, using MDN's small CC0 flo
 - PNG download decoded at 1920 × 1440; JPEG download decoded at 1000 × 800. Visually inspected the exported contact sheet.
 - Editable project save/reload preserves captures and layout; a restored sheet exports without loading the source video.
 - Remote URL load/capture succeeded with `https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4`.
-- The supplied genomatrix URL returned no CORS permission and correctly displayed recovery instructions. Only headers and the browser load failure were checked; the 198 MiB video was not downloaded into the project.
+- The supplied genomatrix URL returned no CORS permission and correctly displayed recovery instructions. The user's local copy subsequently loaded, scrubbed, captured, and exported successfully. Neither the source video nor test captures are committed to the repo.
 - Desktop and 390px viewport layouts inspected; no horizontal page overflow at 390px.
 - Mascot capture/interaction animation starts; the animation toggle and reduced-motion preference disable it.
 - No JavaScript exceptions during the successful editing flows. Syntax and Git whitespace checks pass.
