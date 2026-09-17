@@ -19,6 +19,7 @@
         >scrub<span>sheet</span><i>✳</i></a
       >
       <span class="tagline">a little less video. a little more picture.</span>
+      <span id="autosave-status" role="status">Opening local recovery…</span>
       <button id="help-button" class="quiet">keys <kbd>?</kbd></button>
     </header>
     <main>
@@ -47,6 +48,13 @@
           hidden
         />
         <button id="restore-project" class="quiet">Open sheet</button>
+        <button
+          id="new-sheet"
+          class="quiet"
+          title="Start fresh; Undo brings this sheet back"
+        >
+          New sheet
+        </button>
       </section>
       <div id="notice" role="status" aria-live="polite">
         All the work happens here, in your browser. Your files stay yours.
@@ -88,6 +96,39 @@
             <span id="stage-hint" hidden>click the picture to capture</span>
           </div>
           <div class="transport">
+            <div class="filmstrip-tools">
+              <span id="window-label">THE WHOLE PICTURE</span>
+              <button
+                id="pan-left"
+                class="quiet"
+                aria-label="Earlier timeline window"
+                disabled
+              >
+                ←
+              </button>
+              <label
+                >Zoom
+                <select id="timeline-zoom" aria-label="Timeline zoom" disabled>
+                  <option value="1">1×</option>
+                  <option value="2">2×</option>
+                  <option value="4">4×</option>
+                  <option value="8">8×</option>
+                  <option value="16">16×</option>
+                  <option value="32">32×</option>
+                </select></label
+              >
+              <button
+                id="pan-right"
+                class="quiet"
+                aria-label="Later timeline window"
+                disabled
+              >
+                →
+              </button>
+            </div>
+            <div id="filmstrip" aria-label="Video filmstrip">
+              <span>Little pictures of the bigger picture.</span>
+            </div>
             <div class="timeline-wrap">
               <input
                 id="timeline"
@@ -129,6 +170,18 @@
                 Capture <kbd>C</kbd>
               </button>
             </div>
+          </div>
+          <div class="capture-options">
+            <label
+              ><input id="keep-rolling" type="checkbox" /> keep rolling after
+              capture</label
+            ><label
+              >Capture to
+              <select id="capture-target">
+                <option value="sheet">sheet + advance</option>
+                <option value="tray">frame tray</option>
+              </select></label
+            >
           </div>
           <div class="under-player">
             <span
@@ -186,10 +239,27 @@
             </p>
             <p>
               Use <strong>Save sheet</strong> to keep an editable copy with your
-              captured images. Save before closing or refreshing; there is no
-              autosave. No automatic uploads, accounts, or cloud storage.
+              captured images and tray. Your work also autosaves in this
+              browser; wait for “Saved on this device” before closing. Reopen
+              the source video after recovery. Saved sheet files remain your
+              portable backup.
             </p>
           </details>
+          <section class="tray-panel" aria-label="Frame tray">
+            <div class="section-heading">
+              <h2>Frame tray <span id="tray-count">0</span></h2>
+              <button id="stash" class="quiet" disabled>
+                Stash selected cell
+              </button>
+            </div>
+            <p class="tray-help">
+              Collect candidates here. Pick a sheet cell, then click a tray
+              frame to place it. Replaced frames come back here.
+            </p>
+            <div id="tray">
+              <span class="tray-empty">Room for your maybes.</span>
+            </div>
+          </section>
         </section>
         <section class="sheet-panel" aria-label="Contact sheet workspace">
           <div class="section-heading">
@@ -210,6 +280,12 @@
           <div class="sheet-hint">
             <span class="dot"></span> selected cell
             <span>click to aim · drag to rearrange</span>
+          </div>
+          <div class="seed-row">
+            <button id="seed" class="quiet" disabled>✳ Seed empty cells</button
+            ><span id="seed-hint"
+              >Evenly sample the visible timeline range.</span
+            ><button id="cancel-seed" class="quiet" hidden>Cancel</button>
           </div>
           <fieldset class="layout-settings">
             <legend>MAKE IT FIT</legend>
@@ -290,6 +366,7 @@
           </fieldset>
           <div class="export-row">
             <button id="save-project" class="quiet">Save sheet</button
+            ><button id="copy-sheet" class="quiet" disabled>Copy image</button
             ><select id="format" aria-label="Export format">
               <option value="png">PNG</option>
               <option value="jpeg">JPEG</option></select

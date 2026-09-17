@@ -1,6 +1,12 @@
 # Browser verification
 
-Verified in Chromium through Playwright on 2026-09-17, using MDN's small CC0 flower video and the user's local `genotr2.mp4` (1440 × 1080, about 154 seconds). No test dependencies are required by the app.
+Verified in Chromium/Google Chrome through Playwright on 2026-09-17, using MDN's small CC0 flower video and the user's local `genotr2.mp4` (1440 × 1080, about 154 seconds). No test dependencies are required by the app at runtime.
+
+Run the repeatable suite with `npm ci` then `npm test -- /path/to/video.mp4`. It uses an installed Google Chrome, launches its own server on a free port, and runs in isolated contexts. `tests/browser-regression.mjs` can also be called with an existing Playwright Browser.
+
+The expanded suite checks filmstrip generation, zoom/pan, scrubber-focus shortcuts, keep-rolling capture, tray replacement/drag/stash/undo, seeding only empty cells within the visible range, unchanged main playhead during sampling, whole-pass undo, seeding cancellation, version 1/2 project import, editable tray roundtrips, reload recovery, source-video reattachment at the saved time, New sheet/Undo, mobile overflow, and reduced motion. Clipboard writes are intercepted to validate a real 1920 × 1440 PNG and the denied-permission fallback without altering the system clipboard; an actual paste into another app has not been automated.
+
+Storage fault tests also pass: separate tabs recover their own drafts, a fresh tab recovers the most recent draft, simulated quota exhaustion reports an autosave failure while preserving the last committed draft, and blocked IndexedDB does not prevent editing or manual export.
 
 - Local file load; player-click and keyboard capture; automatic advancement to the next cell.
 - Focused timeline regression: click the range slider, press C, and verify capture and advancement without moving focus. Arrow scrubbing still works with the slider focused; C in URL/text inputs continues editing text without capturing.

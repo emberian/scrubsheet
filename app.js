@@ -1,3 +1,6 @@
+import { createSampler, snapshot, decodeFrame } from "./media.js";
+import { createDraftStore } from "./drafts.js";
+
 const $ = (id) => document.getElementById(id);
 const video = $("video");
 const defaults = {
@@ -20,6 +23,24 @@ let busy = false;
 let revision = 0;
 let seekTarget = null;
 let dragIndex = null;
+let dragTray = null;
+let tray = [];
+let recoveredSource = null;
+let resume = null;
+let sampler = null;
+let filmToken = 0;
+let filmTimer;
+let windowStart = 0;
+let windowEnd = 0;
+let seeding = false;
+let seedToken = 0;
+let editSerial = 0;
+let booted = false;
+let saveTimer;
+let saveSerial = 0;
+let savedSerial = 0;
+let saveQueue = Promise.resolve();
+const drafts = createDraftStore();
 const history = [];
 const capacity = () => settings.columns * settings.rows;
 const visible = () => cells.slice(0, capacity());
@@ -41,7 +62,13 @@ function notice(message, kind = "") {
 }
 
 function remember() {
-  history.push({ settings: { ...settings }, cells: [...cells], selected });
+  editSerial++;
+  history.push({
+    settings: { ...settings },
+    cells: [...cells],
+    tray: [...tray],
+    selected,
+  });
   if (history.length > 30) history.shift();
   $("undo").disabled = false;
 }
@@ -49,7 +76,8 @@ function remember() {
 function undo() {
   const previous = history.pop();
   if (!previous) return;
-  ({ settings, cells, selected } = previous);
+  editSerial++;
+  ({ settings, cells, tray, selected } = previous);
   syncSettings();
   render();
   notice("Undone. Your previous sheet is back.");
@@ -196,15 +224,22 @@ function render() {
   $("count").textContent = `${count} / ${capacity()} FRAMES`;
   $("selection-label").textContent =
     selected === null
-      ? "Sheet full · pick a cell to replace"
+      ? count === capacity()
+        ? "Sheet full · pick a cell to replace"
+        : "Pick a cell to continue"
       : `Next: cell ${pad(selected + 1)}`;
   $("remove").disabled = !cells[selected];
   $("undo").disabled = !history.length;
   $("export").disabled = count === 0;
+  $("copy-sheet").disabled = count === 0;
+  $("stash").disabled = !cells[selected] || tray.length >= 144;
+  updateShrub(count);
+  renderTray();
   $("export-info").textContent =
     `${settings.width} × ${settings.height} px · ${count ? `${count} moment${count === 1 ? "" : "s"} worth keeping` : "ready when you are"}`;
   updateControls();
   renderMarkers();
+  scheduleSave();
 }
 
 function renderMarkers() {
@@ -214,7 +249,8 @@ function renderMarkers() {
     .filter((cell) => cell && cell.sourceId === source.id)
     .forEach((cell) => {
       const marker = document.createElement("i");
-      marker.style.left = `${(100 * cell.time) / video.duration}%`;
+      if (cell.time < windowStart || cell.time > windowEnd) return;
+      marker.style.left = `${(100 * (cell.time - windowStart)) / (windowEnd - windowStart)}%`;
       $("markers").append(marker);
     });
 }
@@ -222,17 +258,41 @@ function renderMarkers() {
 function updateControls() {
   for (const id of ["play", "back", "forward", "timeline", "timecode"])
     $(id).disabled = !ready;
-  $("capture").disabled = !ready || busy || selected === null;
+  const toTray = $("capture-target").value === "tray";
+  const key = document.createElement("kbd");
+  key.textContent = "C";
+  $("capture").replaceChildren(
+    document.createTextNode(toTray ? "Stash " : "Capture "),
+    key,
+  );
+  $("capture").disabled =
+    !ready || busy || (toTray ? tray.length >= 144 : selected === null);
+  $("seed").disabled = !ready || seeding || visible().every(Boolean);
+  $("cancel-seed").hidden = !seeding;
+  $("timeline-zoom").disabled = !ready;
+  $("pan-left").disabled = !ready || windowStart <= 0;
+  $("pan-right").disabled = !ready || windowEnd >= video.duration;
 }
 
 function updateTime() {
   if (document.activeElement !== $("timecode"))
     $("timecode").value = timeLabel(video.currentTime, true);
   $("timeline").value = video.currentTime || 0;
+  if (
+    ready &&
+    !video.paused &&
+    (video.currentTime < windowStart || video.currentTime > windowEnd)
+  )
+    setWindow(video.currentTime);
 }
 
 function openSource(url, info) {
   revision++;
+  cancelSeeding(false);
+  filmToken++;
+  clearTimeout(filmTimer);
+  sampler?.dispose();
+  sampler = null;
   video.pause();
   ready = false;
   busy = false;
@@ -242,6 +302,7 @@ function openSource(url, info) {
   if (objectURL) URL.revokeObjectURL(objectURL);
   objectURL = info.kind === "file" ? url : null;
   source = info;
+  recoveredSource = info;
   video.crossOrigin = "anonymous";
   video.src = url;
   video.muted = !$("sound").checked;
@@ -254,6 +315,8 @@ function openSource(url, info) {
   $("duration").textContent = "…";
   updateControls();
   notice(`Loading ${info.name}… Captures already in your sheet are kept.`);
+  $("filmstrip").textContent = "Finding the little pictures…";
+  scheduleSave();
 }
 
 function openFile(file) {
@@ -303,8 +366,14 @@ video.addEventListener("loadeddata", () => {
     return;
   }
   ready = true;
+  if (!sampler) sampler = createSampler(video.src);
+  if (resume?.sourceId === source.id) {
+    video.currentTime = Math.min(resume.time, video.duration - 0.001);
+    resume = null;
+  }
   $("duration").textContent = timeLabel(video.duration);
   $("timeline").max = video.duration;
+  setWindow(video.currentTime);
   $("stage-hint").hidden = false;
   updateControls();
   updateTime();
@@ -337,6 +406,12 @@ video.addEventListener("timeupdate", updateTime);
 video.addEventListener("seeked", () => {
   seekTarget = null;
   updateTime();
+  if (
+    ready &&
+    (video.currentTime < windowStart || video.currentTime > windowEnd)
+  )
+    setWindow(video.currentTime);
+  scheduleSave();
 });
 video.addEventListener("play", () => {
   $("play").textContent = "Ⅱ";
@@ -345,6 +420,7 @@ video.addEventListener("play", () => {
 video.addEventListener("pause", () => {
   $("play").textContent = "▶";
   $("play").setAttribute("aria-label", "Play video");
+  scheduleSave();
 });
 
 async function togglePlay() {
@@ -404,13 +480,7 @@ function frameReady() {
 }
 
 function celebrate(captured = true) {
-  $("shrub-quip").textContent = [
-    "nice catch, scrub.",
-    "that one goes on the fridge.",
-    "enhance. enhance. okay, capture.",
-    "look at you. noticing things.",
-    "a moment, successfully hoarded.",
-  ][Math.floor(Math.random() * 5)];
+  updateShrub(visible().filter(Boolean).length);
   for (const element of captured
     ? [$("capture-flash"), $("shrub-pal")]
     : [$("shrub-pal")]) {
@@ -421,44 +491,58 @@ function celebrate(captured = true) {
 }
 
 async function capture() {
-  if (!ready || busy || selected === null) return;
+  const toTray = $("capture-target").value === "tray";
+  if (!ready || busy || (toTray ? tray.length >= 144 : selected === null))
+    return;
+  if (!toTray && cells[selected] && tray.length >= 144) {
+    notice(
+      "The tray is full. Remove a candidate before replacing this cell.",
+      "error",
+    );
+    return;
+  }
   busy = true;
   updateControls();
   const generation = revision;
+  const edit = editSerial;
   const destination = selected;
-  video.pause();
+  if (!$("keep-rolling").checked) video.pause();
   try {
     await frameReady();
     if (generation !== revision) return;
-    const canvas = document.createElement("canvas");
-    // Keep native pixels for normal footage, cap very large sources at 16 MP.
-    const scale = Math.min(
-      1,
-      Math.sqrt(16_000_000 / (video.videoWidth * video.videoHeight)),
-    );
-    canvas.width = Math.round(video.videoWidth * scale);
-    canvas.height = Math.round(video.videoHeight * scale);
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    const src = canvas.toDataURL("image/jpeg", 0.96);
-    const time = video.currentTime;
+    const { src, time } = snapshot(video);
     const capturedSource = { ...source };
     const image = new Image();
     image.src = src;
     await image.decode();
     if (generation !== revision) return;
+    if (edit !== editSerial) {
+      notice(
+        "The sheet changed while that frame loaded. Capture again to use your current layout.",
+      );
+      return;
+    }
     remember();
-    cells[destination] = {
+    const frame = {
       src,
       image,
       time,
       sourceId: capturedSource.id,
       sourceName: capturedSource.name,
     };
-    selected = destination + 1 < capacity() ? destination + 1 : null;
+    if (toTray) tray.push(frame);
+    else {
+      if (cells[destination] && tray.length < 144)
+        tray.push(cells[destination]);
+      cells[destination] = frame;
+      selected = destination + 1 < capacity() ? destination + 1 : null;
+    }
     render();
     celebrate();
     notice(
-      `Cell ${pad(destination + 1)} ← ${timeLabel(time, true)}.${selected === null ? " End of the grid! Pick a cell to replace, or export your sheet." : ` Next capture goes in cell ${pad(selected + 1)}.`}`,
+      toTray
+        ? `Stashed ${timeLabel(time, true)} in your frame tray.`
+        : `Cell ${pad(destination + 1)} ← ${timeLabel(time, true)}.${selected === null ? " End of the grid! Pick a cell to replace, capture to the tray, or export." : ` Next capture goes in cell ${pad(selected + 1)}.`}`,
       "success",
     );
   } catch (error) {
@@ -493,7 +577,9 @@ function selectCell(index) {
   }
   $("selection-label").textContent = `Next: cell ${pad(selected + 1)}`;
   $("remove").disabled = !cells[selected];
+  $("stash").disabled = !cells[selected] || tray.length >= 144;
   updateControls();
+  scheduleSave();
 }
 function removeCell() {
   if (selected === null || !cells[selected]) return;
@@ -515,7 +601,7 @@ function download(blob, filename) {
 }
 
 function sheetName() {
-  return `${(source?.name || "untitled")
+  return `${(source?.name || recoveredSource?.name || "untitled")
     .replace(/\.[^.]+$/, "")
     .replace(/[^\p{L}\p{N}._-]+/gu, "-")
     .slice(0, 90)}-scrubsheet`;
@@ -542,9 +628,9 @@ function drawCell(ctx, image, x, y, width, height) {
   ctx.restore();
 }
 
-async function exportImage() {
+async function exportImage(copy = false) {
   if (!visible().some(Boolean)) return;
-  const button = $("export");
+  const button = $(copy ? "copy-sheet" : "export");
   button.disabled = true;
   try {
     const canvas = document.createElement("canvas");
@@ -591,46 +677,87 @@ async function exportImage() {
         ctx.restore();
       }
     });
-    const format = $("format").value;
-    const blob = await new Promise((resolve) =>
-      canvas.toBlob(resolve, `image/${format}`, 0.95),
-    );
-    if (!blob)
+    const format = copy ? "png" : $("format").value;
+    if (copy && (!navigator.clipboard?.write || !window.ClipboardItem))
       throw new Error(
-        "The browser couldn’t export this size. Try a smaller image.",
+        "Image copying is unavailable in this browser. Use Export image instead.",
       );
+    const blobPromise = new Promise((resolve, reject) =>
+      canvas.toBlob(
+        (blob) =>
+          blob
+            ? resolve(blob)
+            : reject(
+                new Error(
+                  "The browser could not export this size. Try a smaller image.",
+                ),
+              ),
+        `image/${format}`,
+        0.95,
+      ),
+    );
+    blobPromise.catch(() => {});
+    if (copy) {
+      // Start the write during the click; promise-valued data keeps Safari's user activation.
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": blobPromise }),
+      ]);
+      notice(
+        "Copied your sheet. Paste it straight into Discord or wherever it belongs.",
+        "success",
+      );
+      return;
+    }
+    const blob = await blobPromise;
     download(blob, `${sheetName()}.${format === "jpeg" ? "jpg" : "png"}`);
     notice(
       `Exported ${canvas.width} × ${canvas.height}. Go show someone what you saw.`,
       "success",
     );
   } catch (error) {
-    notice(error.message, "error");
+    notice(
+      copy
+        ? `Couldn’t copy the image: ${error.message} Use Export image if clipboard access is blocked.`
+        : error.message,
+      "error",
+    );
   } finally {
     button.disabled = !visible().some(Boolean);
   }
 }
 
-function saveProject() {
-  const project = {
+function projectData() {
+  const clean = (cell) =>
+    cell
+      ? {
+          src: cell.src,
+          time: cell.time,
+          sourceId: cell.sourceId,
+          sourceName: cell.sourceName,
+        }
+      : null;
+  const info = source || recoveredSource;
+  return {
     app: "scrubsheet",
-    version: 1,
-    settings,
+    version: 2,
+    settings: { ...settings },
     selected,
-    source: source
-      ? { name: source.name, kind: source.kind, url: source.url }
+    source: info
+      ? { name: info.name, kind: info.kind, url: info.url, id: info.id }
       : null,
-    cells: cells.map((cell) =>
-      cell
-        ? {
-            src: cell.src,
-            time: cell.time,
-            sourceId: cell.sourceId,
-            sourceName: cell.sourceName,
-          }
-        : null,
-    ),
+    position: ready ? video.currentTime : resume?.time || 0,
+    preferences: {
+      keepRolling: $("keep-rolling").checked,
+      captureTarget: $("capture-target").value,
+      zoom: $("timeline-zoom").value,
+    },
+    cells: cells.map(clean),
+    tray: tray.map(clean),
   };
+}
+
+function saveProject() {
+  const project = projectData();
   download(
     new Blob([JSON.stringify(project)], { type: "application/json" }),
     `${sheetName()}.scrubsheet`,
@@ -646,68 +773,83 @@ async function restoreProject(file) {
   try {
     if (file.size > 100_000_000)
       throw new Error("This sheet is over 100 MB. Try a smaller project.");
-    const project = JSON.parse(await file.text());
-    if (
-      project.app !== "scrubsheet" ||
-      project.version !== 1 ||
-      !Array.isArray(project.cells) ||
-      project.cells.length > 144
-    )
-      throw new Error("That isn’t a supported Scrubsheet project.");
-    const nextSettings = validSettings(project.settings);
-    const nextCells = [];
-    for (const cell of project.cells) {
-      if (!cell) {
-        nextCells.push(null);
-        continue;
-      }
-      if (
-        typeof cell.src !== "string" ||
-        !/^data:image\/(jpeg|png|webp);base64,/.test(cell.src) ||
-        !Number.isFinite(cell.time) ||
-        cell.time < 0 ||
-        typeof cell.sourceId !== "string" ||
-        typeof cell.sourceName !== "string"
-      )
-        throw new Error(
-          "A saved frame is invalid. Your current sheet hasn’t been changed.",
-        );
-      const image = new Image();
-      image.src = cell.src;
-      await image.decode();
-      nextCells.push({
-        src: cell.src,
-        time: cell.time,
-        sourceId: cell.sourceId,
-        sourceName: cell.sourceName,
-        image,
-      });
-    }
-    while (nextCells.length < nextSettings.columns * nextSettings.rows)
-      nextCells.push(null);
-    remember();
-    settings = nextSettings;
-    cells = nextCells;
-    selected =
-      Number.isInteger(project.selected) &&
-      project.selected >= 0 &&
-      project.selected < capacity()
-        ? project.selected
-        : 0;
-    if (
-      project.source?.kind === "url" &&
-      typeof project.source.url === "string"
-    )
-      $("video-url").value = project.source.url;
-    syncSettings();
-    render();
+    await applyProject(JSON.parse(await file.text()));
     notice(
-      "Sheet restored. To capture more or revisit a timestamp, reopen its original video. Remote URLs are filled in but never loaded automatically.",
+      "Sheet and tray restored. Reopen the original video to capture more or revisit timestamps. Remote URLs are never loaded automatically.",
       "success",
     );
   } catch (error) {
     notice(`Couldn’t open the sheet: ${error.message}`, "error");
   }
+}
+
+async function applyProject(project, recovering = false) {
+  const edit = editSerial;
+  if (
+    project.app !== "scrubsheet" ||
+    ![1, 2].includes(project.version) ||
+    !Array.isArray(project.cells) ||
+    project.cells.length > 144 ||
+    (project.tray &&
+      (!Array.isArray(project.tray) || project.tray.length > 144))
+  )
+    throw new Error("That isn’t a supported Scrubsheet project.");
+  if (
+    project.source &&
+    (typeof project.source !== "object" ||
+      typeof project.source.name !== "string" ||
+      !["file", "url"].includes(project.source.kind) ||
+      (project.source.id != null && typeof project.source.id !== "string") ||
+      (project.source.url != null && typeof project.source.url !== "string"))
+  )
+    throw new Error("The saved source metadata is invalid.");
+  const nextSettings = validSettings(project.settings);
+  const nextCells = [];
+  for (const cell of project.cells) {
+    nextCells.push(await decodeFrame(cell));
+  }
+  const nextTray = [];
+  for (const frame of project.tray || []) {
+    const decoded = await decodeFrame(frame);
+    if (decoded) nextTray.push(decoded);
+  }
+  while (nextCells.length < nextSettings.columns * nextSettings.rows)
+    nextCells.push(null);
+  if (!recovering && edit !== editSerial)
+    throw new Error(
+      "The sheet changed while this project was opening. Try opening it again when you’re done editing.",
+    );
+  if (!recovering) remember();
+  settings = nextSettings;
+  cells = nextCells;
+  tray = nextTray;
+  recoveredSource = project.source || null;
+  resume = {
+    sourceId: project.source?.id,
+    time:
+      Number.isFinite(project.position) && project.position >= 0
+        ? project.position
+        : 0,
+  };
+  selected =
+    Number.isInteger(project.selected) &&
+    project.selected >= 0 &&
+    project.selected < capacity()
+      ? project.selected
+      : project.selected === null
+        ? null
+        : 0;
+  if (project.source?.kind === "url" && typeof project.source.url === "string")
+    $("video-url").value = project.source.url;
+  $("keep-rolling").checked = Boolean(project.preferences?.keepRolling);
+  $("capture-target").value =
+    project.preferences?.captureTarget === "tray" ? "tray" : "sheet";
+  const zoom = String(project.preferences?.zoom || "1");
+  $("timeline-zoom").value = ["1", "2", "4", "8", "16", "32"].includes(zoom)
+    ? zoom
+    : "1";
+  syncSettings();
+  render();
 }
 
 $("open-file").onclick = $("welcome-open").onclick = () =>
@@ -750,7 +892,8 @@ $("timecode").onkeydown = (event) => {
 };
 $("undo").onclick = undo;
 $("remove").onclick = removeCell;
-$("export").onclick = exportImage;
+$("export").onclick = () => exportImage();
+$("copy-sheet").onclick = () => exportImage(true);
 $("save-project").onclick = saveProject;
 $("restore-project").onclick = () => $("project-input").click();
 $("project-input").onchange = (event) => {
@@ -804,7 +947,7 @@ $("grid").addEventListener("dragstart", (event) => {
   event.dataTransfer.effectAllowed = "move";
 });
 $("grid").addEventListener("dragover", (event) => {
-  if (dragIndex === null) return;
+  if (dragIndex === null && dragTray === null) return;
   event.preventDefault();
   event.dataTransfer.dropEffect = "move";
   event.target.closest(".cell")?.classList.add("drag-target");
@@ -813,9 +956,14 @@ $("grid").addEventListener("dragleave", (event) =>
   event.target.closest(".cell")?.classList.remove("drag-target"),
 );
 $("grid").addEventListener("drop", (event) => {
-  if (dragIndex === null) return;
+  if (dragIndex === null && dragTray === null) return;
   event.preventDefault();
   const button = event.target.closest(".cell");
+  if (button && dragTray !== null) {
+    placeTray(dragTray, Number(button.dataset.index));
+    dragTray = null;
+    return;
+  }
   if (button) {
     const to = Number(button.dataset.index);
     remember();
@@ -901,6 +1049,332 @@ document.addEventListener("keydown", (event) => {
   }
 });
 
+function updateShrub(count) {
+  const fullness = count / capacity();
+  const mood = fullness >= 1 ? 3 : fullness >= 0.5 ? 2 : count ? 1 : 0;
+  $("shrub-pal").dataset.mood = mood;
+  $("shrub-quip").textContent = [
+    "take a picture. it'll last longer.",
+    "oh, you have an eye for this.",
+    "look at us. curating. being insufferable.",
+    "a full sheet. impeccable taste. mostly mine.",
+  ][mood];
+  $("shrub-pal").title = [
+    "Certified frame goblin",
+    "Quietly impressed",
+    "Dangerously smug",
+    "Unbearably pleased with themself",
+  ][mood];
+}
+
+function renderTray() {
+  const root = $("tray");
+  root.replaceChildren();
+  $("tray-count").textContent = `${tray.length} / 144`;
+  if (!tray.length) {
+    const empty = document.createElement("span");
+    empty.className = "tray-empty";
+    empty.textContent = "Room for your maybes.";
+    root.append(empty);
+  }
+  tray.forEach((frame, index) => {
+    const card = document.createElement("div");
+    card.className = "tray-card";
+    const place = document.createElement("button");
+    place.className = "tray-frame";
+    place.title = `${frame.sourceName} · ${timeLabel(frame.time, true)} · click to place in selected cell`;
+    place.setAttribute(
+      "aria-label",
+      `Place tray frame ${index + 1}, ${timeLabel(frame.time, true)}`,
+    );
+    place.draggable = true;
+    const img = document.createElement("img");
+    img.src = frame.src;
+    img.alt = "";
+    img.draggable = false;
+    const label = document.createElement("span");
+    label.textContent = timeLabel(frame.time, true);
+    place.append(img, label);
+    place.onclick = () => placeTray(index, selected);
+    place.ondragstart = (event) => {
+      dragTray = index;
+      event.dataTransfer.setData("text/plain", `tray:${index}`);
+      event.dataTransfer.effectAllowed = "move";
+    };
+    place.ondragend = () => {
+      dragTray = null;
+      document
+        .querySelectorAll(".drag-target")
+        .forEach((el) => el.classList.remove("drag-target"));
+    };
+    const remove = document.createElement("button");
+    remove.className = "tray-remove";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove tray frame ${index + 1}`);
+    remove.onclick = () => {
+      remember();
+      tray.splice(index, 1);
+      render();
+    };
+    card.append(place, remove);
+    root.append(card);
+  });
+}
+
+function placeTray(index, destination) {
+  if (destination === null || !tray[index]) {
+    notice("Pick a destination cell, then click a tray frame.");
+    return;
+  }
+  remember();
+  const frame = tray[index];
+  if (cells[destination]) tray[index] = cells[destination];
+  else tray.splice(index, 1);
+  cells[destination] = frame;
+  selected = destination + 1 < capacity() ? destination + 1 : null;
+  render();
+  celebrate();
+  notice(
+    `Placed in cell ${pad(destination + 1)}. Any replaced frame is waiting in the tray.`,
+    "success",
+  );
+}
+
+function setWindow(center, start) {
+  if (!ready) return;
+  const span = video.duration / Number($("timeline-zoom").value);
+  windowStart = Math.max(
+    0,
+    Math.min(video.duration - span, start ?? center - span / 2),
+  );
+  windowEnd = Math.min(video.duration, windowStart + span);
+  $("timeline").min = windowStart;
+  $("timeline").max = windowEnd;
+  $("timeline").value = video.currentTime;
+  $("window-label").textContent =
+    `${timeLabel(windowStart, true)} — ${timeLabel(windowEnd, true)}`;
+  updateControls();
+  renderMarkers();
+  clearTimeout(filmTimer);
+  filmToken++;
+  filmTimer = setTimeout(buildFilmstrip, 200);
+}
+
+async function buildFilmstrip() {
+  if (!sampler || !ready || seeding) return;
+  const token = ++filmToken;
+  const decoder = sampler;
+  const start = windowStart,
+    span = windowEnd - start;
+  const root = $("filmstrip");
+  root.replaceChildren();
+  const buttons = [];
+  for (let i = 0; i < 8; i++) {
+    const time = start + ((i + 0.5) / 8) * span;
+    const button = document.createElement("button");
+    button.className = "film-frame";
+    button.setAttribute("aria-label", `Seek to ${timeLabel(time, true)}`);
+    const stamp = document.createElement("span");
+    stamp.textContent = timeLabel(time);
+    button.append(stamp);
+    button.onclick = () => seek(time);
+    root.append(button);
+    buttons.push(button);
+  }
+  try {
+    for (let i = 0; i < buttons.length; i++) {
+      if (token !== filmToken || seeding) return;
+      const frame = await decoder.frameAt(start + ((i + 0.5) / 8) * span, true);
+      if (token !== filmToken) return;
+      const image = document.createElement("img");
+      image.src = frame.src;
+      image.alt = "";
+      buttons[i].prepend(image);
+    }
+  } catch {
+    if (token === filmToken)
+      root.title =
+        "Some thumbnails could not load. The main player is still available.";
+  }
+}
+
+function cancelSeeding(announce = true) {
+  const wasSeeding = seeding;
+  seedToken++;
+  seeding = false;
+  if (wasSeeding) {
+    updateControls();
+    $("seed-hint").textContent = "Evenly sample the visible timeline range.";
+    if (announce) notice("Seeding cancelled. Your sheet has not changed.");
+    clearTimeout(filmTimer);
+    filmTimer = setTimeout(buildFilmstrip, 200);
+  }
+}
+
+async function seedSheet() {
+  if (!ready || !sampler || seeding) return;
+  const blanks = visible()
+    .map((cell, i) => (cell ? -1 : i))
+    .filter((i) => i >= 0);
+  if (!blanks.length) return;
+  seeding = true;
+  const token = ++seedToken,
+    generation = revision,
+    edit = editSerial;
+  filmToken++;
+  const decoder = sampler,
+    info = { ...source };
+  const start = windowStart,
+    span = windowEnd - windowStart;
+  updateControls();
+  const frames = [];
+  try {
+    for (let i = 0; i < blanks.length; i++) {
+      $("seed-hint").textContent = `Collecting ${i + 1} / ${blanks.length}…`;
+      const frame = await decoder.frameAt(
+        start + ((i + 0.5) / blanks.length) * span,
+      );
+      if (token !== seedToken || generation !== revision) return;
+      if (edit !== editSerial)
+        throw new Error(
+          "The sheet changed while sampling. No seed frames were applied; try again when you’re done editing.",
+        );
+      frames.push(
+        await decodeFrame({
+          ...frame,
+          sourceId: info.id,
+          sourceName: info.name,
+        }),
+      );
+      if (token !== seedToken || generation !== revision) return;
+    }
+    if (edit !== editSerial)
+      throw new Error(
+        "The sheet changed while sampling. No seed frames were applied; try again when you’re done editing.",
+      );
+    remember();
+    blanks.forEach((index, i) => {
+      cells[index] = frames[i];
+    });
+    selected = null;
+    render();
+    celebrate();
+    notice(
+      `Added ${frames.length} evenly spaced moments. Your existing captures stayed put. Undo removes this entire seed pass.`,
+      "success",
+    );
+  } catch (error) {
+    if (token === seedToken) notice(error.message, "error");
+  } finally {
+    if (token === seedToken) {
+      seeding = false;
+      $("seed-hint").textContent = "Evenly sample the visible timeline range.";
+      updateControls();
+      buildFilmstrip();
+    }
+  }
+}
+
+function scheduleSave() {
+  if (!booted) return;
+  saveSerial++;
+  $("autosave-status").textContent = "Saving on this device…";
+  $("autosave-status").classList.remove("save-error");
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flushSave, 250);
+}
+
+function flushSave() {
+  clearTimeout(saveTimer);
+  if (!booted || saveSerial === savedSerial) return;
+  const serial = saveSerial;
+  const project = projectData();
+  saveQueue = saveQueue
+    .catch(() => {})
+    .then(() => drafts.write(project))
+    .then(() => {
+      savedSerial = serial;
+      if (serial === saveSerial) {
+        $("autosave-status").textContent = "Saved on this device";
+        $("autosave-status").classList.remove("save-error");
+      }
+    })
+    .catch((error) => {
+      $("autosave-status").textContent = "Not autosaved — use Save sheet";
+      $("autosave-status").classList.add("save-error");
+      $("autosave-status").title = error.message;
+    });
+  return saveQueue;
+}
+
+async function recoverDraft() {
+  // Prevent edits while a stored draft is decoding, rather than replacing new work.
+  document.querySelector("main").inert = true;
+  try {
+    const project = await drafts.read();
+    if (project) {
+      await applyProject(project, true);
+      notice(
+        `Recovered your sheet and tray${project.source?.name ? ` from ${project.source.name}` : ""}. Reopen the source video to keep collecting.`,
+        "success",
+      );
+    }
+    $("autosave-status").textContent = project
+      ? "Recovered on this device"
+      : "Local autosave ready";
+  } catch (error) {
+    $("autosave-status").textContent = "Recovery unavailable — use Save sheet";
+    $("autosave-status").classList.add("save-error");
+    $("autosave-status").title = error.message;
+  } finally {
+    booted = true;
+    document.querySelector("main").inert = false;
+  }
+}
+
+$("stash").onclick = () => {
+  if (!cells[selected] || tray.length >= 144) return;
+  remember();
+  tray.push(cells[selected]);
+  cells[selected] = null;
+  render();
+  notice("Stashed in the tray. The cell is ready for another candidate.");
+};
+$("new-sheet").onclick = () => {
+  cancelSeeding(false);
+  remember();
+  cells = Array(capacity()).fill(null);
+  tray = [];
+  selected = 0;
+  render();
+  notice("Fresh sheet and tray. Undo brings your previous picks back.");
+};
+$("seed").onclick = seedSheet;
+$("cancel-seed").onclick = () => cancelSeeding();
+$("timeline-zoom").onchange = () => {
+  setWindow(video.currentTime);
+  scheduleSave();
+};
+$("pan-left").onclick = () =>
+  setWindow(0, windowStart - (windowEnd - windowStart) / 2);
+$("pan-right").onclick = () =>
+  setWindow(0, windowStart + (windowEnd - windowStart) / 2);
+$("capture-target").onchange = () => {
+  updateControls();
+  scheduleSave();
+};
+$("keep-rolling").onchange = scheduleSave;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) flushSave();
+});
+window.addEventListener("beforeunload", (event) => {
+  if (saveSerial !== savedSerial) {
+    flushSave();
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});
+
 new ResizeObserver(scaleGrid).observe($("grid"));
 $("shrub-pal").onclick = () => celebrate(false);
 $("motion-toggle").onclick = () => {
@@ -914,3 +1388,4 @@ $("motion-toggle").onclick = () => {
   $("motion-toggle").textContent = paused ? "▶" : "Ⅱ";
 };
 render();
+recoverDraft();
