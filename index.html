@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#20231e" />
+    <meta
+      name="description"
+      content="Scrub a video. Pick your moments. Make a contact sheet. A private, browser-only tool."
+    />
+    <title>scrubsheet — pick your moments.</title>
+    <link rel="icon" type="image/png" href="./assets/shrubenby.png" />
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <header>
+      <a class="wordmark" href="./" aria-label="Scrubsheet home"
+        >scrub<span>sheet</span><i>✳</i></a
+      >
+      <span class="tagline">a little less video. a little more picture.</span>
+      <button id="help-button" class="quiet">keys <kbd>?</kbd></button>
+    </header>
+    <main>
+      <section class="source-bar" aria-label="Open a video">
+        <button id="open-file">＋ Open video</button>
+        <span class="or">or</span>
+        <form id="url-form">
+          <input
+            id="video-url"
+            type="url"
+            placeholder="Paste a direct video URL…"
+            aria-label="Video URL"
+            required
+          /><button type="submit" class="quiet">Load URL ↗</button>
+        </form>
+        <input
+          id="file-input"
+          type="file"
+          accept="video/*,.mkv,.mov,.m4v"
+          hidden
+        />
+        <input
+          id="project-input"
+          type="file"
+          accept=".json,.scrubsheet"
+          hidden
+        />
+        <button id="restore-project" class="quiet">Open sheet</button>
+      </section>
+      <div id="notice" role="status" aria-live="polite">
+        All the work happens here, in your browser. Your files stay yours.
+      </div>
+      <div class="workspace">
+        <section class="player-panel" aria-label="Video workspace">
+          <div class="section-heading">
+            <h1><span class="step">01</span> Find a moment</h1>
+            <span id="source-name">NO VIDEO YET</span>
+          </div>
+          <div id="stage" class="stage">
+            <video
+              id="video"
+              playsinline
+              preload="auto"
+              crossorigin="anonymous"
+              aria-label="Video preview; click to capture the current frame"
+              tabindex="0"
+              hidden
+            ></video>
+            <div id="welcome">
+              <div class="welcome-copy">
+                <span class="eyebrow">FRAME HOARDERS, REJOICE.</span>
+                <h2>Good bits.<br />All in one place.</h2>
+                <p>
+                  Drop a video here.<br />Scrub around. Collect the evidence.
+                </p>
+                <button id="welcome-open" class="primary">
+                  Let's make a sheet ↗</button
+                ><small>or paste a video URL up top</small>
+              </div>
+              <img
+                src="./assets/shrubenby.png"
+                alt="A scruffy skaterpunk shrub pointing at you and saying ‘scrub.’"
+                class="mascot"
+              />
+            </div>
+            <span id="capture-flash" aria-hidden="true">got it ✳</span>
+            <span id="stage-hint" hidden>click the picture to capture</span>
+          </div>
+          <div class="transport">
+            <div class="timeline-wrap">
+              <input
+                id="timeline"
+                type="range"
+                min="0"
+                max="100"
+                step="0.001"
+                value="0"
+                aria-label="Scrub video"
+                disabled
+              />
+              <div id="markers" aria-hidden="true"></div>
+            </div>
+            <div class="transport-row">
+              <button id="play" aria-label="Play video" disabled>▶</button
+              ><button
+                id="back"
+                title="Back one scrub step (←)"
+                aria-label="Scrub backward"
+                disabled
+              >
+                ↤</button
+              ><button
+                id="forward"
+                title="Forward one scrub step (→)"
+                aria-label="Scrub forward"
+                disabled
+              >
+                ↦</button
+              ><input
+                id="timecode"
+                aria-label="Current time (seconds or hh:mm:ss)"
+                value="00:00.000"
+                disabled
+              /><span class="duration">/ <span id="duration">00:00</span></span
+              ><label class="sound"
+                ><input type="checkbox" id="sound" checked /> sound</label
+              ><button id="capture" class="primary" disabled>
+                Capture <kbd>C</kbd>
+              </button>
+            </div>
+          </div>
+          <div class="under-player">
+            <span
+              ><kbd>←</kbd> <kbd>→</kbd> scrub <b>·</b> <kbd>Shift</kbd> faster
+              <b>·</b> <kbd>Space</kbd> play</span
+            ><label
+              >step
+              <select id="scrub-step" aria-label="Scrub step">
+                <option value="0.0416666667">~1/24 sec</option>
+                <option value="0.0333333333">~1/30 sec</option>
+                <option value="0.0166666667">~1/60 sec</option>
+                <option value="0.1" selected>0.1 sec</option>
+                <option value="1">1 sec</option>
+              </select></label
+            >
+          </div>
+          <div class="shrub-strip">
+            <button
+              id="shrub-pal"
+              class="shrub-pal"
+              aria-label="Give the shrubenby a little encouragement"
+              title="Certified frame goblin"
+            >
+              <img
+                src="./assets/shrubenby.png"
+                alt="The skaterpunk shrubenby mascot"
+              />
+            </button>
+            <div>
+              <span class="eyebrow">YOUR LOCAL FRAME GOBLIN</span>
+              <p id="shrub-quip">take a picture. it'll last longer.</p>
+            </div>
+            <button
+              id="motion-toggle"
+              class="quiet"
+              aria-label="Pause mascot animation"
+              aria-pressed="false"
+              title="Pause mascot animation"
+            >
+              Ⅱ
+            </button>
+          </div>
+          <details class="field-notes">
+            <summary>A few field notes</summary>
+            <p>
+              Click a sheet cell to choose where your next capture goes. Each
+              capture advances to the next cell. Double-click a filled cell to
+              revisit its moment. Drag cells to swap them.
+            </p>
+            <p>
+              Arrow keys pause and scrub. Shift jumps 10× further. Small steps
+              are time-based, not guaranteed frame-exact. Remote videos need a
+              direct media URL and cross-origin permission from their host;
+              ordinary YouTube pages won't work.
+            </p>
+            <p>
+              Use <strong>Save sheet</strong> to keep an editable copy with your
+              captured images. Save before closing or refreshing; there is no
+              autosave. No automatic uploads, accounts, or cloud storage.
+            </p>
+          </details>
+        </section>
+        <section class="sheet-panel" aria-label="Contact sheet workspace">
+          <div class="section-heading">
+            <h2><span class="step">02</span> Build your sheet</h2>
+            <span id="count">0 / 12 FRAMES</span>
+          </div>
+          <div class="sheet-toolbar">
+            <span id="selection-label">Next: cell 01</span>
+            <div>
+              <button id="undo" class="quiet" disabled title="Undo (⌘/Ctrl Z)">
+                ↶ Undo</button
+              ><button id="remove" class="quiet" disabled>Remove</button>
+            </div>
+          </div>
+          <div class="sheet-surface">
+            <div id="grid" role="group" aria-label="Contact sheet cells"></div>
+          </div>
+          <div class="sheet-hint">
+            <span class="dot"></span> selected cell
+            <span>click to aim · drag to rearrange</span>
+          </div>
+          <fieldset class="layout-settings">
+            <legend>MAKE IT FIT</legend>
+            <div class="settings-row">
+              <label
+                >Columns<input
+                  id="columns"
+                  type="number"
+                  min="1"
+                  max="12"
+                  value="3" /></label
+              ><span class="times">×</span
+              ><label
+                >Rows<input
+                  id="rows"
+                  type="number"
+                  min="1"
+                  max="12"
+                  value="4" /></label
+              ><label class="wide"
+                >Image fit<select id="fit">
+                  <option value="contain">Whole frame</option>
+                  <option value="cover">Fill / crop</option>
+                </select></label
+              >
+            </div>
+            <div class="settings-row">
+              <label
+                >Width <span>px</span
+                ><input
+                  id="width"
+                  type="number"
+                  min="128"
+                  max="8192"
+                  step="1"
+                  value="1920" /></label
+              ><span class="times">×</span
+              ><label
+                >Height <span>px</span
+                ><input
+                  id="height"
+                  type="number"
+                  min="128"
+                  max="8192"
+                  step="1"
+                  value="1440" /></label
+              ><button
+                id="natural-size"
+                class="quiet wide"
+                title="Set height so cells match the video's aspect ratio"
+              >
+                Match video ratio ↗
+              </button>
+            </div>
+            <div class="settings-row finishing">
+              <label
+                >Gutter
+                <input
+                  id="gutter"
+                  type="number"
+                  min="0"
+                  max="80"
+                  value="8"
+                /><span>px</span></label
+              ><label class="check"
+                ><input id="timestamps" type="checkbox" checked />
+                timestamps</label
+              ><label class="color-label"
+                ><input
+                  id="background"
+                  type="color"
+                  value="#161913"
+                  aria-label="Sheet background color"
+                />
+                background</label
+              >
+            </div>
+          </fieldset>
+          <div class="export-row">
+            <button id="save-project" class="quiet">Save sheet</button
+            ><select id="format" aria-label="Export format">
+              <option value="png">PNG</option>
+              <option value="jpeg">JPEG</option></select
+            ><button id="export" class="primary" disabled>
+              Export image ↗
+            </button>
+          </div>
+          <p id="export-info">1920 × 1440 px · ready when you are</p>
+        </section>
+      </div>
+    </main>
+    <footer>
+      <span>scrubsheet <i>✳</i> made for looking closer.</span
+      ><span>no upload. no account. just the good bits.</span>
+    </footer>
+    <dialog id="help">
+      <form method="dialog">
+        <button class="close" aria-label="Close keyboard shortcuts">×</button>
+      </form>
+      <span class="eyebrow">LESS CLICKING, MORE PICKING</span>
+      <h2>Know your keys.</h2>
+      <dl>
+        <dt><kbd>C</kbd> / <kbd>Enter</kbd></dt>
+        <dd>Capture & advance</dd>
+        <dt><kbd>←</kbd> <kbd>→</kbd></dt>
+        <dd>Pause & scrub one step</dd>
+        <dt><kbd>Shift</kbd> + arrows</dt>
+        <dd>Scrub ten steps</dd>
+        <dt><kbd>Space</kbd></dt>
+        <dd>Play / pause</dd>
+        <dt><kbd>[</kbd> <kbd>]</kbd></dt>
+        <dd>Select previous / next cell</dd>
+        <dt><kbd>Delete</kbd></dt>
+        <dd>Clear selected cell</dd>
+        <dt><kbd>⌘/Ctrl</kbd> <kbd>Z</kbd></dt>
+        <dd>Undo sheet edit</dd>
+      </dl>
+      <p>Keyboard shortcuts leave text and number inputs alone.</p>
+    </dialog>
+  </body>
+</html>
